@@ -210,6 +210,12 @@ def prepare_task(args, devices):
 def now():
   return datetime.now().strftime('%H:%M:%S')
 
+def count_compiles():
+  metricsreport = torch_xla._XLAC._xla_metrics_report().split('\n')
+  for i, line in enumerate(metricsreport):
+    if line.endswith('CompileTime'):
+      return int(''.join([c for c in metricsreport[i + 1] if c.isdigit()]))
+
 
 def main_tpu(args):
 
@@ -217,6 +223,10 @@ def main_tpu(args):
     msg = '{}/ {}, device {}, step {}'.format(step_type, now(), device, step)
     if tracker:
       msg += ', Rate={:.2f}'.format(tracker.rate())
+    if metrics_debug:
+      msg += ', Compiles={}, _local_scalar_dense={}'.format(
+          count_compiles(),
+          torch_xla._XLAC._xla_counter_value('aten::_local_scalar_dense'))
     return msg
 
   def train_loop_fn(model, loader, device, context):
