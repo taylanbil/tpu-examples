@@ -192,7 +192,7 @@ def prepare_task(args, devices):
 
   # Build trainers
   trainers = {
-      device: Trainer(args, task, model, task.build_criterion(args))
+      device: Trainer(args, task, model, task.build_criterion(args), xla=True)
       for device, model in zip(model_parallel.devices, model_parallel.models)
   }
   trainer = trainers[devices[0]]
@@ -335,10 +335,10 @@ def main_tpu(args):
     return ((lr > FLAGS.min_lr) and (epoch_itr.epoch < max_epoch) and
             (n_updates < max_update))
 
-  print('Args')
+  xu.eprint('Args')
   for key, val in args.__dict__.items():
-    print('\t{} {}'.format(key, val))
-  print('---------')
+    xu.eprint('\t{} {}'.format(key, val))
+  xu.eprint('---------')
 
   devices = xm.get_xla_supported_devices(max_devices=args.num_cores)
   task, trainers, model_parallel, epoch_itr, lr, valid_subsets = prepare_task(
