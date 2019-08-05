@@ -192,7 +192,7 @@ def prepare_task(args, devices):
 
   # Build trainers
   trainers = {
-      device: Trainer(args, task, model, task.build_criterion(args), xla=True)
+      device: Trainer(args, task, model, task.build_criterion(args), xla=True, device=device)
       for device, model in zip(model_parallel.devices, model_parallel.models)
   }
   trainer = trainers[devices[0]]
@@ -239,14 +239,35 @@ def main_tpu(args):
       if not (i % args.log_steps):
         print(
             log_step(
-                'training',
+                'STEP BEGIN: trainer.train_step begin',
                 device,
                 i,
                 tracker=tracker,
                 metrics_debug=args.metrics_debug))
       _log_output = trainer.train_step(samples)
-      xm.optimizer_step(trainer.optimizer)
+      print(
+            log_step(
+                'trainer.train_step done, xm.opt step begin',
+                device,
+                i,
+                tracker=tracker,
+                metrics_debug=args.metrics_debug))
+      xm.optimizer_step(trainer.optimizer) 
+      print(
+            log_step(
+                'xm.opt step done',
+                device,
+                i,
+                tracker=tracker,
+                metrics_debug=args.metrics_debug))
       tracker.add(len(samples) * args.max_sentences)  # n_batches * batch_size
+      print(
+            log_step(
+                'STEP DONE',
+                device,
+                i,
+                tracker=tracker,
+                metrics_debug=args.metrics_debug))
     stats = fairseq_train.get_training_stats(trainer)
     return tracker, stats
 
