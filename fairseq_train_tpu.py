@@ -239,7 +239,7 @@ def main_tpu(args):
       if not (i % args.log_steps):
         print(
             log_step(
-                'STEP BEGIN: trainer.train_step begin',
+                '\nSTEP BEGIN: trainer.train_step begin',
                 device,
                 i,
                 tracker=tracker,
