@@ -179,7 +179,7 @@ def prepare_task(args, devices):
 
   # Build models and criteria to print some metadata
   model_parallel = dp.DataParallel(
-      lambda: task.build_model(args), device_ids=devices)
+      lambda: task.build_model(args), device_ids=devices, hf=False)
   model, criterion = task.build_model(args), task.build_criterion(args)
   print(model)
   print('| model {}, criterion {}'.format(args.arch,
@@ -219,10 +219,18 @@ def count_compiles():
       return int(''.join([c for c in metricsreport[i + 1] if c.isdigit()]))
 
 
+LAST_TIME = None
+
+
 def main_tpu(args):
 
   def log_step(step_type, device, step, tracker=None, metrics_debug=False):
-    msg = '{}/ {}, device {}, step {}'.format(step_type, now(), device, step)
+    #msg = '{}/ {}, device {}, step {}'.format(step_type, now(), device, step)
+    global LAST_TIME
+    tnow = now()
+    te = None if LAST_TIME is None else tnow - LAST_TIME
+    LAST_TIME = tnow
+    msg = '{} {} {} {} step {}'.format(step_type, device, te, tnow, step)
     if tracker:
       msg += ', Rate={:.2f}'.format(tracker.rate())
     if metrics_debug:
@@ -236,10 +244,11 @@ def main_tpu(args):
     stats = None
     tracker = xm.RateTracker()
     for i, samples in loader:
-      if not (i % args.log_steps):
-        print(
+      #if not (i % args.log_steps):
+      print('')
+      print(
             log_step(
-                '\nSTEP BEGIN: trainer.train_step begin',
+                'STEP BEGIN: trainer.train_step begin',
                 device,
                 i,
                 tracker=tracker,
