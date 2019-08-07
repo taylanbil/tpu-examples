@@ -179,7 +179,7 @@ def prepare_task(args, devices):
 
   # Build models and criteria to print some metadata
   model_parallel = dp.DataParallel(
-      lambda: task.build_model(args), device_ids=devices, hf=False)
+      lambda: task.build_model(args), device_ids=devices, hf=2)
   model, criterion = task.build_model(args), task.build_criterion(args)
   print(model)
   print('| model {}, criterion {}'.format(args.arch,
@@ -243,7 +243,9 @@ def main_tpu(args):
     trainer = trainers[str(device)]
     stats = None
     tracker = xm.RateTracker()
-    for i, samples in loader:
+    #for i, samples in loader:
+    i, samples = next(loader)
+    for i in range(200):
       #if not (i % args.log_steps):
       print('')
       print(
@@ -261,7 +263,7 @@ def main_tpu(args):
                 i,
                 tracker=tracker,
                 metrics_debug=args.metrics_debug))
-      xm.optimizer_step(trainer.optimizer) 
+      xm.optimizer_step(trainer.optimizer)
       print(
             log_step(
                 'xm.opt step done',
