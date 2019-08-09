@@ -179,7 +179,7 @@ def prepare_task(args, devices):
 
   # Build models and criteria to print some metadata
   model_parallel = dp.DataParallel(
-      lambda: task.build_model(args), device_ids=devices, hf=2)
+      lambda: task.build_model(args), device_ids=devices, hf=False)
   model, criterion = task.build_model(args), task.build_criterion(args)
   print(model)
   print('| model {}, criterion {}'.format(args.arch,
