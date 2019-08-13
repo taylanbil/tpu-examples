@@ -58,7 +58,7 @@ import collections
 from datetime import datetime
 from utils import initialize_path
 
-initialize_path('xla', 'fairseq')
+initialize_path('fairseq')
 
 import torch
 
@@ -232,7 +232,8 @@ def main_tpu(args):
     LAST_TIME = tnow
     msg = '{} {} {} {} step {}'.format(step_type, device, te, tnow, step)
     if tracker:
-      msg += ', Rate={:.2f}'.format(tracker.rate())
+      rates = tracker.rate(), tracker.global_rate()
+      msg += ', Rate={:.2f}, Global Rate={:.2f}'.format(*rates)
     if metrics_debug:
       msg += ', Compiles={}, _local_scalar_dense={}'.format(
           count_compiles(),
@@ -243,11 +244,9 @@ def main_tpu(args):
     trainer = trainers[str(device)]
     stats = None
     tracker = xm.RateTracker()
-    #i, samples = next(loader)
-    #for i in range(200):
     for i, samples in loader:
-      #if not (i % args.log_steps):
       print('')
+      #if i and not (i % args.log_steps):
       print(
             log_step(
                 'STEP BEGIN: trainer.train_step begin',
@@ -391,7 +390,8 @@ def main_tpu(args):
       progress.print(stats, tag=device)
     print('Epoch {} Tracker Rates:'.format(epoch_itr.epoch))
     for tracker in trackers:
-      print('\tRate={:.2f}'.format(tracker.rate()))
+      rates = tracker.rate(), tracker.global_rate()
+      print('\tRate={:.2f}, Global Rate={:.2f}'.format(*rates))
     print('Epoch {} end {}'.format(epoch_itr.epoch, now()))
     if args.metrics_debug:
       print(torch_xla._XLAC._xla_metrics_report())
