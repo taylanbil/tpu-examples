@@ -59,6 +59,7 @@ from datetime import datetime
 from utils import initialize_path
 
 initialize_path('fairseq')
+sys.path.insert(0, '/usr/share/torch-xla-nightly/pytorch/xla')
 
 import torch
 
@@ -232,7 +233,10 @@ def main_tpu(args):
     LAST_TIME = tnow
     msg = '{} {} {} {} step {}'.format(step_type, device, te, tnow, step)
     if tracker:
-      rates = tracker.rate(), tracker.global_rate()
+      try:
+        rates = tracker.rate(), tracker.global_rate()
+      except:
+        rates = 0,0
       msg += ', Rate={:.2f}, Global Rate={:.2f}'.format(*rates)
     if metrics_debug:
       msg += ', Compiles={}, _local_scalar_dense={}'.format(
