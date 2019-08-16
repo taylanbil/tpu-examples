@@ -256,7 +256,6 @@ def main_tpu(args):
                 'STEP BEGIN: trainer.train_step begin',
                 device,
                 i,
-                tracker=tracker,
                 metrics_debug=args.metrics_debug))
       _log_output = trainer.train_step(samples)
       print(
@@ -264,7 +263,6 @@ def main_tpu(args):
                 'trainer.train_step done, xm.opt step begin',
                 device,
                 i,
-                tracker=tracker,
                 metrics_debug=args.metrics_debug))
       xm.optimizer_step(trainer.optimizer)
       print(
@@ -272,7 +270,6 @@ def main_tpu(args):
                 'xm.opt step done',
                 device,
                 i,
-                tracker=tracker,
                 metrics_debug=args.metrics_debug))
       tracker.add(len(samples) * args.max_sentences)  # n_batches * batch_size
       print(
