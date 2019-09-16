@@ -79,10 +79,10 @@ def batch_by_size_tpu(
     max_sentences=None,
     required_batch_size_multiple=1,
 ):
-  batches = [[] for _ in INPUT_SHAPES]
+  batches = [[] for _ in FLAGS.input_shapes]
   for idx in indices:
     sample_len = num_tokens_fn(idx)
-    for j, (batch_size, padlen) in enumerate(INPUT_SHAPES):
+    for j, (batch_size, padlen) in enumerate(FLAGS.input_shapes):
       if padlen < sample_len:
         continue
       batches[j].append(idx)
@@ -98,7 +98,7 @@ def collate_tokens_tpu(values,
                        left_pad=False,
                        move_eos_to_beginning=False):
   size = max(v.size(0) for v in values)
-  for batch_size, padlen in INPUT_SHAPES:
+  for batch_size, padlen in FLAGS.input_shapes:
     if padlen < size:
       continue
     size = padlen
@@ -132,7 +132,6 @@ def parse_args():
   # We need to control certain flags here.
   # e.g. parallelization needs to be suppressed and deferred to torch_xla flags
   # e.g. input tensor shapes need to be controlled via --input_shapes
-  global INPUT_SHAPES
   parser = options.get_training_parser()
   parser.add_argument(
       '--input_shapes',
@@ -156,9 +155,8 @@ def parse_args():
     if FLAGS.fp16:
       raise RuntimeError(
           '--fp16 was provided, this is controlled by env var XLA_USE_BF16')
-    if FLAGS.distributed_world_size > 1:
-      xu.eprint('suppressing "distributed_world_size"')
-      FLAGS.distributed_world_size = 1
+    xu.eprint('suppressing "distributed_world_size"')
+    FLAGS.distributed_world_size = xm.xrt_world_size()
     if FLAGS.distributed_init_method is not None:
       xu.eprint('suppressing "distributed_init_method"')
       FLAGS.distributed_init_method = None
@@ -179,9 +177,9 @@ def parse_args():
                 ' this error.').format(gpu_input_shape_args)
       raise RuntimeError(errmsg)
 
-    INPUT_SHAPES = parse_input_shapes(FLAGS.input_shapes)
+    FLAGS.input_shapes = parse_input_shapes(FLAGS.input_shapes)
     # XXX (taylanbil): do we ever have more than 2 dimensions in fairseq?
-    FLAGS.max_source_positions = INPUT_SHAPES[-1][1]
+    FLAGS.max_source_positions = FLAGS.input_shapes[-1][1]
     if xu.getenv_as('XLA_USE_BF16', bool, False):
       xu.eprint(
           'WARNING: bfloat16 is enabled. Note that fairseq meters such as '
@@ -200,7 +198,7 @@ def parse_input_shapes(input_shapes_arg):
   return input_shapes
 
 
-def load_checkpoint_tpu(args, trainers, device_preloaded):
+def load_checkpoint_tpu(args, trainer, device_preloaded):
 
   def meter_to_device(meter, device):
     for key, val in vars(meter).items():
@@ -224,45 +222,6 @@ def load_checkpoint_tpu(args, trainers, device_preloaded):
     trainer_meters_to_device(trainer, device)
 
 
-def prepare_task(args, devices):
-  # Setup task, e.g., translation, language modeling, etc.
-  task = tasks.setup_task(args)
-
-  # Load valid dataset (we load training data below, based on the latest checkpoint)
-  for valid_sub_split in args.valid_subset.split(','):
-    task.load_dataset(valid_sub_split, combine=True, epoch=0)
-
-  # Build models and criteria to print some metadata
-  model_parallel = dp.DataParallel(
-      lambda: task.build_model(args), device_ids=devices)
-  model, criterion = task.build_model(args), task.build_criterion(args)
-  print(model)
-  print('| model {}, criterion {}'.format(args.arch,
-                                          criterion.__class__.__name__))
-  print('| num. model params: {} (num. trained: {})'.format(
-      sum(p.numel() for p in model.parameters()),
-      sum(p.numel() for p in model.parameters() if p.requires_grad),
-  ))
-  del model, criterion
-
-  # Build trainers
-  trainers = {
-      device: Trainer(args, task, model, task.build_criterion(args), xla=True)
-      for device, model in zip(model_parallel.devices, model_parallel.models)
-  }
-  lr = trainers[devices[0]].get_lr()
-
-  # Load the latest checkpoint if one is available and restore the
-  # corresponding train iterator
-  extra_state, epoch_itr = checkpoint_utils.load_checkpoint(
-      args, trainers[devices[0]])
-  if extra_state is not None:
-    # checkpoint detected, load saved model weights to all devices
-    xu.eprint(
-        'checkpoint detected, device 0 meters need to be re-loaded to device')
-    load_checkpoint_tpu(args, trainers, devices[0])
-  valid_subsets = args.valid_subset.split(',')
-  return task, trainers, model_parallel, epoch_itr, lr, valid_subsets
 
 
 def main_tpu(args):
@@ -278,10 +237,45 @@ def main_tpu(args):
           log_output['loss'].item(), log_output['nll_loss'].item())
     return msg
 
-  def train_loop_fn(model, loader, device, context):
-    trainer = trainers[str(device)]
-    stats, log_output = None, None
-    tracker = xm.RateTracker()
+  def prepare_task(args, xla_device):
+    # Setup task, e.g., translation, language modeling, etc.
+    task = tasks.setup_task(args)
+
+    # Load valid dataset (we load training data below, based on the latest checkpoint)
+    for valid_sub_split in args.valid_subset.split(','):
+      task.load_dataset(valid_sub_split, combine=True, epoch=0)
+
+    # Build models and criteria to print some metadata
+    model, criterion = task.build_model(args), task.build_criterion(args)
+    print(model)
+    print('| model {}, criterion {}'.format(args.arch,
+                                            criterion.__class__.__name__))
+    print('| num. model params: {} (num. trained: {})'.format(
+        sum(p.numel() for p in model.parameters()),
+        sum(p.numel() for p in model.parameters() if p.requires_grad),
+    ))
+
+    model = model.to(xla_device)
+    trainer = Trainer(args, task, model, criterion, xla=True)
+    lr = trainer.get_lr()
+
+    # Load the latest checkpoint if one is available and restore the
+    # corresponding train iterator
+    extra_state, epoch_itr = checkpoint_utils.load_checkpoint(args, trainer)
+    # FIXME: load checkpoint re-do
+    if extra_state is not None:
+      # checkpoint detected, load saved model weights
+      xu.eprint(
+          'checkpoint detected, device 0 meters need to be re-loaded to device')
+      raise
+      #load_checkpoint_tpu(args, trainers, devices[0])
+    valid_subsets = args.valid_subset.split(',')
+    ordinal = xm.get_ordinal(defval=-1)
+    device_str = str(xla_device) if ordinal < 0 else '{}/{}'.format(xla_device, ordinal)
+    return task, trainer, model, epoch_itr, lr, valid_subsets, device_str
+
+  def train_loop_fn(device, trainer, loader):
+    stats, log_output, tracker = None, None, xm.RateTracker()
     for i, samples in loader:
       if i and not (i % args.log_steps):
         print(
@@ -292,8 +286,7 @@ def main_tpu(args):
       tracker.add(sum(sample['nsentences'] for sample in samples))
     return tracker
 
-  def valid_loop_fn(model, loader, device, context):
-    trainer = trainers[str(device)]
+  def valid_loop_fn(device, trainer, loader):
     # reset validation loss meters
     for k in ['valid_loss', 'valid_nll_loss']:
       meter = trainer.get_meter(k)
@@ -313,7 +306,7 @@ def main_tpu(args):
       stats[k] = meter.avg
     return stats
 
-  def validate_subset(args, trainers, task, epoch_itr, subset):
+  def validate_subset(args, device, trainer, task, epoch_itr, subset):
     print('Validating the subset "{}"'.format(subset))
     # Initialize data iterator
     itr = task.get_batch_iterator(
@@ -322,7 +315,7 @@ def main_tpu(args):
         max_sentences=args.max_sentences_valid,
         max_positions=utils.resolve_max_positions(
             task.max_positions(),
-            list(trainers.values())[0].get_model().max_positions(),
+            list(trainer.get_model().max_positions()),
         ),
         ignore_invalid_inputs=args.skip_invalid_size_inputs_valid_test,
         required_batch_size_multiple=args.required_batch_size_multiple,
@@ -332,25 +325,21 @@ def main_tpu(args):
         args,
         itr,
         epoch_itr.epoch,
-        prefix='valid on \'{}\' subset'.format(subset),
+        prefix='valid on {} \'{}\' subset'.format(device, subset),
         no_progress_bar='simple')
-    stats_per_device = model_parallel(valid_loop_fn, progress)
-    valid_losses = [stats['loss'].avg for stats in stats_per_device]
-    print('validation stats on subset "{}" - {}'.format(subset,
-                                                        utils_tpu.now()))
-    for stats in stats_per_device:
-      progress.print(
-          stats, tag=subset, step=trainers['xla:1'].get_num_updates())
-    return valid_losses
+    para_loader = dp.ParallelLoader(progress, [device])
+    stats = valid_loop_fn(device, trainer, para_loader.per_device_loader(device))
+    progress.print(stats, tag=subset, step=trainer.get_num_updates())
+    return stats['loss'].avg
 
-  def validate(args, trainers, task, epoch_itr, subsets):
+  def validate(args, device, trainer, task, epoch_itr, subsets):
     valid_losses = {
-        subset: validate_subset(args, trainers, task, epoch_itr, subset)
+        subset: validate_subset(args, device, trainer, task, epoch_itr, subset)
         for subset in subsets
     }
     return valid_losses
 
-  def initialize_loader_for_epoch(args, epoch_itr):
+  def initialize_loader_for_epoch(args, epoch_itr, device):
     if epoch_itr.epoch <= len(args.update_freq):
       update_freq = args.update_freq[epoch_itr.epoch - 1]
     else:
@@ -361,62 +350,57 @@ def main_tpu(args):
         fix_batches_to_gpus=False, shuffle=(epoch_itr.epoch >= args.curriculum))
     itr = iterators.GroupedIterator(itr, update_freq)
     progress = progress_bar.build_progress_bar(
-        args, itr, epoch_itr.epoch, prefix='training', no_progress_bar='simple')
-    return progress
+        args, itr, epoch_itr.epoch, prefix='training on {}'.format(device), no_progress_bar='simple')
+    para_loader = dp.ParallelLoader(progress, [device])
+    return progress, para_loader
 
-  def keep_training(lr, epoch_itr, trainers):
-    # Train until the learning rate gets too small
+  def keep_training(lr, epoch_itr, trainer):
     max_epoch = args.max_epoch or math.inf
     max_update = args.max_update or math.inf
-    lr = min(trainer.get_lr() for trainer in trainers.values())
-    n_updates = max(trainer.get_num_updates() for trainer in trainers.values())
+    lr = trainer.get_lr()
+    n_updates = trainer.get_num_updates()
     return ((lr > FLAGS.min_lr) and (epoch_itr.epoch < max_epoch) and
             (n_updates < max_update))
 
-  xu.eprint('Args')
-  for key, val in args.__dict__.items():
-    xu.eprint('\t{} {}'.format(key, val))
-  xu.eprint('---------')
-
-  device = xm.xla_device()
-  task, trainers, model_parallel, epoch_itr, lr, valid_subsets = prepare_task(
-      args, device)
-
+  # `xla_device` is `torch.device` and `device` is `str`
+  xla_device = xm.xla_device()
+  task, trainer, model, epoch_itr, lr, valid_subsets, device = prepare_task(
+      args, xla_device)
   train_meter = StopwatchMeter()
   train_meter.start()
-  while keep_training(lr, epoch_itr, trainers):
+  while keep_training(lr, epoch_itr, trainer):
     # TRAINING
-    print('Epoch {} begin {}'.format(epoch_itr.epoch + 1, utils_tpu.now()))
-    progress = initialize_loader_for_epoch(args, epoch_itr)
-    trackers = model_parallel(train_loop_fn, progress)
-    print('Epoch {} Training stats:'.format(epoch_itr.epoch))
-    for device, trainer in trainers.items():
-      stats = fairseq_train.get_training_stats(trainer)
-      print('device {}'.format(device))
-      progress.print(stats, tag=device)
-    print('Epoch {} Tracker Rates:'.format(epoch_itr.epoch))
-    for tracker in trackers:
-      rates = tracker.rate(), tracker.global_rate()
-      print('\tRate={:.2f}, GlobalRate={:.2f}'.format(*rates))
-    print('Epoch {} end {}'.format(epoch_itr.epoch, utils_tpu.now()))
+    print('Device {} Epoch {} begin {}'.format(device, epoch_itr.epoch + 1, utils_tpu.now()))
+    progress, para_loader = initialize_loader_for_epoch(args, epoch_itr, device)
+    tracker = train_loop_fn(device, trainer, para_loader.per_device_loader(device))
+    print('Device {} Epoch {} Training stats:'.format(device, epoch_itr.epoch))
+    stats = fairseq_train.get_training_stats(trainer)
+    progress.print(stats, tag=device)
+    print('Device {} Epoch {} Tracker Rate={:.2f}, GlobalRate={:.2f}'.format(device, epoch_itr.epoch, tracker.rate(), tracker.global_rate()))
+    print('Device {} Epoch {} end {}'.format(device, epoch_itr.epoch, utils_tpu.now()))
     if args.metrics_debug:
       print(torch_xla._XLAC._xla_metrics_report())
 
     # VALIDATION
     if not args.disable_validation and epoch_itr.epoch % args.validate_interval == 0:
-      valid_losses = validate(args, trainers, task, epoch_itr, valid_subsets)
+      valid_losses = validate(args, device, trainer, task, epoch_itr, valid_subsets)
 
       # only use average first validation loss from the first device
       # to update the learning rate
-      vloss = valid_losses[valid_subsets[0]][0].item()
+      # FIXME
+      vloss = valid_losses[valid_subsets[0]].item()
       print('old learning rate: {}'.format(lr))
-      lr = trainers[devices[0]].lr_step(epoch_itr.epoch, vloss)
+      lr = trainer.lr_step(epoch_itr.epoch, vloss)
       print('new learning rate: {}'.format(lr))
 
       # save checkpoint
+      # FIXME: only save from first device
+      from fairseq import distributed_utils
+      print('device {} ISMASTER {}'.format(device, distributed_utils.is_master(args)))
+      from fairseq import pdb
+      pdb.set_trace()
       if epoch_itr.epoch % args.save_interval == 0:
-        checkpoint_utils.save_checkpoint(args, trainers[devices[0]], epoch_itr,
-                                         vloss)
+        checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, vloss)
 
     if args.metrics_debug:
       print(torch_xla._XLAC._xla_metrics_report())
@@ -425,8 +409,13 @@ def main_tpu(args):
   print('| done training in {:.1f} seconds'.format(train_meter.sum))
 
 
+def _mp_fn(index, flags):
+  global FLAGS
+  FLAGS = flags
+  torch.set_default_tensor_type('torch.FloatTensor')
+  main_tpu(flags)
+
 if __name__ == '__main__':
-  INPUT_SHAPES = None
   FLAGS = parse_args()
   if FLAGS.use_gpu:
     # undo batch preparation function assignments TPU -> GPU
@@ -434,4 +423,9 @@ if __name__ == '__main__':
     data_utils.batch_by_size = batch_by_size_gpu
     fairseq_train.cli_main()
   else:
-    main_tpu(FLAGS)
+    #main_tpu(FLAGS)
+    xu.eprint('Args')
+    for key, val in FLAGS.__dict__.items():
+      xu.eprint('\t{} {}'.format(key, val))
+    xu.eprint('---------')
+    xmp.spawn(_mp_fn, args=(FLAGS,), nprocs=FLAGS.num_cores)
