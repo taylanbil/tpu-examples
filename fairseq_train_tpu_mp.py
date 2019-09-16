@@ -307,7 +307,6 @@ def main_tpu(args):
     return stats
 
   def validate_subset(args, device, trainer, task, epoch_itr, subset):
-    print('Validating the subset "{}"'.format(subset))
     # Initialize data iterator
     itr = task.get_batch_iterator(
         dataset=task.dataset(subset),
@@ -387,19 +386,14 @@ def main_tpu(args):
 
       # only use average first validation loss from the first device
       # to update the learning rate
-      # FIXME
       vloss = valid_losses[valid_subsets[0]].item()
       print('old learning rate: {}'.format(lr))
       lr = trainer.lr_step(epoch_itr.epoch, vloss)
       print('new learning rate: {}'.format(lr))
 
       # save checkpoint
-      # FIXME: only save from first device
-      from fairseq import distributed_utils
-      print('device {} ISMASTER {}'.format(device, distributed_utils.is_master(args)))
-      from fairseq import pdb
-      pdb.set_trace()
-      if epoch_itr.epoch % args.save_interval == 0:
+      # FIXME: only save from first device?
+      if device == 'xla:0/0' and epoch_itr.epoch % args.save_interval == 0:
         checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, vloss)
 
     if args.metrics_debug:
