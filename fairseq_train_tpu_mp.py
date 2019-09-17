@@ -56,6 +56,7 @@ import collections
 import utils as utils_tpu
 
 utils_tpu.initialize_path('fairseq')
+sys.path.insert(0, '/usr/share/torch-xla-nightly/pytorch/xla')
 
 import torch
 import torch_xla
@@ -247,13 +248,14 @@ def main_tpu(args):
 
     # Build models and criteria to print some metadata
     model, criterion = task.build_model(args), task.build_criterion(args)
-    print(model)
-    print('| model {}, criterion {}'.format(args.arch,
-                                            criterion.__class__.__name__))
-    print('| num. model params: {} (num. trained: {})'.format(
-        sum(p.numel() for p in model.parameters()),
-        sum(p.numel() for p in model.parameters() if p.requires_grad),
-    ))
+    if xm.is_master_ordinal():
+      print(model)
+      print('| model {}, criterion {}'.format(args.arch,
+                                              criterion.__class__.__name__))
+      print('| num. model params: {} (num. trained: {})'.format(
+          sum(p.numel() for p in model.parameters()),
+          sum(p.numel() for p in model.parameters() if p.requires_grad),
+      ))
 
     model = model.to(xla_device)
     trainer = Trainer(args, task, model, criterion, xla=True)
@@ -276,7 +278,10 @@ def main_tpu(args):
 
   def train_loop_fn(device, trainer, loader):
     stats, log_output, tracker = None, None, xm.RateTracker()
+    counter = 0
     for i, samples in loader:
+      counter += sum(sample['nsentences'] for sample in samples)
+      continue
       if i and not (i % args.log_steps):
         print(
             log_step(
@@ -284,6 +289,8 @@ def main_tpu(args):
       log_output = trainer.train_step(samples)
       xm.optimizer_step(trainer.optimizer)
       tracker.add(sum(sample['nsentences'] for sample in samples))
+    print('NUMSAMPLES', device, counter, i)
+    raise
     return tracker
 
   def valid_loop_fn(device, trainer, loader):
