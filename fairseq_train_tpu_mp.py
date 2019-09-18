@@ -157,7 +157,7 @@ def parse_args():
       raise RuntimeError(
           '--fp16 was provided, this is controlled by env var XLA_USE_BF16')
     xu.eprint('suppressing "distributed_world_size"')
-    FLAGS.distributed_world_size = xm.xrt_world_size()
+    FLAGS.distributed_world_size = 1
     if FLAGS.distributed_init_method is not None:
       xu.eprint('suppressing "distributed_init_method"')
       FLAGS.distributed_init_method = None
@@ -413,6 +413,8 @@ def main_tpu(args):
 def _mp_fn(index, flags):
   global FLAGS
   FLAGS = flags
+  flags.distributed_rank = xm.get_ordinal()
+  flags.distributed_world_size = xm.xrt_world_size()
   torch.set_default_tensor_type('torch.FloatTensor')
   main_tpu(flags)
 
