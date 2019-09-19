@@ -278,7 +278,6 @@ def main_tpu(args):
 
   def train_loop_fn(device, trainer, loader):
     stats, log_output, tracker = None, None, xm.RateTracker()
-    print('LEN LOADER', len(loader._loader._loader))
     for i, samples in loader:
       if i+1 == len(loader._loader._loader):
           #FIXME: last batches are incomplete
@@ -403,9 +402,8 @@ def main_tpu(args):
       vloss = None
 
     # save checkpoint
-    # FIXME: only save from first device?
-    if xm.is_master_ordinal() and epoch_itr.epoch % args.save_interval == 0:
-      checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, vloss)
+    if epoch_itr.epoch % args.save_interval == 0:
+      checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, vloss, xm.is_master_ordinal())
 
     if args.metrics_debug:
       print(torch_xla._XLAC._xla_metrics_report())
