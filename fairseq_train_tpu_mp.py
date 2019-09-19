@@ -49,7 +49,6 @@ Here, TPU specific flags are:
 
 import argparse
 import sys
-import os
 import math
 import collections
 
@@ -155,11 +154,11 @@ def parse_args():
     if FLAGS.fp16:
       raise RuntimeError(
           '--fp16 was provided, this is controlled by env var XLA_USE_BF16')
-    xu.eprint('suppressing "distributed_world_size"')
+    xu.eprint('suppressing distributed_init args for GPU')
+    FLAGS.distributed_rank = 0
     FLAGS.distributed_world_size = 1
-    if FLAGS.distributed_init_method is not None:
-      xu.eprint('suppressing "distributed_init_method"')
-      FLAGS.distributed_init_method = None
+    FLAGS.distributed_init_method = None
+
     if FLAGS.input_shapes is None:
       raise RuntimeError('Please specify batches and pad lengths using '
                          '--input_shapes. Ex: `--input_shapes 256x32 512x16` .'
@@ -259,7 +258,12 @@ def main_tpu(args):
 
     # Load the latest checkpoint if one is available and restore the
     # corresponding train iterator
+    # set distributed args here to shard data
+    trainer.args.distributed_rank = xm.get_ordinal()
+    trainer.args.distributed_world_size = xm.xrt_world_size()
     extra_state, epoch_itr = checkpoint_utils.load_checkpoint(args, trainer)
+    trainer.args.distributed_rank = 0
+    trainer.args.distributed_world_size = 1
     # FIXME: load checkpoint re-do
     if extra_state is not None:
       # checkpoint detected, load saved model weights
@@ -274,10 +278,7 @@ def main_tpu(args):
 
   def train_loop_fn(device, trainer, loader):
     stats, log_output, tracker = None, None, xm.RateTracker()
-    counter = 0
     for i, samples in loader:
-      counter += sum(sample['nsentences'] for sample in samples)
-      continue
       if i and not (i % args.log_steps):
         print(
             log_step(
@@ -286,8 +287,6 @@ def main_tpu(args):
       log_output = trainer.train_step(samples)
       xm.optimizer_step(trainer.optimizer)
       tracker.add(sum(sample['nsentences'] for sample in samples))
-    print('NUMSAMPLES', device, counter, i)
-    raise
     return tracker
 
   def valid_loop_fn(device, trainer, loader):
@@ -393,11 +392,13 @@ def main_tpu(args):
       xm.master_print('old learning rate: {}'.format(lr))
       lr = trainer.lr_step(epoch_itr.epoch, vloss)
       xm.master_print('new learning rate: {}'.format(lr))
+    else:
+      vloss = None
 
-      # save checkpoint
-      # FIXME: only save from first device?
-      if device == 'xla:0/0' and epoch_itr.epoch % args.save_interval == 0:
-        checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, vloss)
+    # save checkpoint
+    # FIXME: only save from first device?
+    if xm.is_master_ordinal() and epoch_itr.epoch % args.save_interval == 0:
+      checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, vloss)
 
     if args.metrics_debug:
       print(torch_xla._XLAC._xla_metrics_report())
@@ -409,8 +410,6 @@ def main_tpu(args):
 def _mp_fn(index, flags):
   global FLAGS
   FLAGS = flags
-  #flags.distributed_rank = xm.get_ordinal()
-  #flags.distributed_world_size = xm.xrt_world_size()
   torch.set_default_tensor_type('torch.FloatTensor')
   main_tpu(flags)
 
