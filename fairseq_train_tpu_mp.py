@@ -278,7 +278,11 @@ def main_tpu(args):
 
   def train_loop_fn(device, trainer, loader):
     stats, log_output, tracker = None, None, xm.RateTracker()
+    print('LEN LOADER', len(loader._loader._loader))
     for i, samples in loader:
+      if i+1 == len(loader._loader._loader):
+          #FIXME: last batches are incomplete
+          break
       if i and not (i % args.log_steps):
         print(
             log_step(
@@ -297,6 +301,9 @@ def main_tpu(args):
         meter.reset()
     extra_meters = collections.defaultdict(lambda: AverageMeter())
     for i, sample in loader:
+      if i+1 == len(loader._loader._loader):
+          #FIXME: last batches are incomplete
+          break
       if not (i % args.log_steps):
         print(log_step('validation', device, i, tracker=None))
       log_output = trainer.valid_step(sample)
