@@ -56,7 +56,6 @@ import collections
 import utils as utils_tpu
 
 utils_tpu.initialize_path('fairseq')
-sys.path.insert(0, '/usr/share/torch-xla-nightly/pytorch/xla')
 
 import torch
 import torch_xla
@@ -248,15 +247,12 @@ def main_tpu(args):
 
     # Build models and criteria to print some metadata
     model, criterion = task.build_model(args), task.build_criterion(args)
-    if xm.is_master_ordinal():
-      print(model)
-      print('| model {}, criterion {}'.format(args.arch,
-                                              criterion.__class__.__name__))
-      print('| num. model params: {} (num. trained: {})'.format(
-          sum(p.numel() for p in model.parameters()),
-          sum(p.numel() for p in model.parameters() if p.requires_grad),
-      ))
-
+    xm.master_print(model)
+    xm.master_print('| model {}, criterion {}'.format(
+        args.arch, criterion.__class__.__name__))
+    xm.master_print('| num. model params: {} (num. trained: {})'.format(
+        sum(p.numel() for p in model.parameters()),
+        sum(p.numel() for p in model.parameters() if p.requires_grad)))
     model = model.to(xla_device)
     trainer = Trainer(args, task, model, criterion, xla=True)
     lr = trainer.get_lr()
@@ -285,7 +281,8 @@ def main_tpu(args):
       if i and not (i % args.log_steps):
         print(
             log_step(
-                'training', device, i, log_output=log_output, tracker=tracker))
+                'training', device, i, log_output=None, tracker=tracker))
+      # FIXME: log output None above
       log_output = trainer.train_step(samples)
       xm.optimizer_step(trainer.optimizer)
       tracker.add(sum(sample['nsentences'] for sample in samples))
@@ -376,16 +373,15 @@ def main_tpu(args):
   train_meter.start()
   while keep_training(lr, epoch_itr, trainer):
     # TRAINING
-    print('Device {} Epoch {} begin {}'.format(device, epoch_itr.epoch + 1, utils_tpu.now()))
+    xm.master_print('Epoch {} begin {}'.format(epoch_itr.epoch + 1, utils_tpu.now()))
     progress, para_loader = initialize_loader_for_epoch(args, epoch_itr, device)
     tracker = train_loop_fn(device, trainer, para_loader.per_device_loader(device))
-    print('Device {} Epoch {} Training stats:'.format(device, epoch_itr.epoch))
     stats = fairseq_train.get_training_stats(trainer)
     progress.print(stats, tag=device)
     print('Device {} Epoch {} Tracker Rate={:.2f}, GlobalRate={:.2f}'.format(device, epoch_itr.epoch, tracker.rate(), tracker.global_rate()))
-    print('Device {} Epoch {} end {}'.format(device, epoch_itr.epoch, utils_tpu.now()))
+    xm.master_print('Epoch {} end {}'.format(epoch_itr.epoch, utils_tpu.now()))
     if args.metrics_debug:
-      print(torch_xla._XLAC._xla_metrics_report())
+      xm.master_print(torch_xla._XLAC._xla_metrics_report())
 
     # VALIDATION
     if not args.disable_validation and epoch_itr.epoch % args.validate_interval == 0:
@@ -394,9 +390,9 @@ def main_tpu(args):
       # only use average first validation loss from the first device
       # to update the learning rate
       vloss = valid_losses[valid_subsets[0]].item()
-      print('old learning rate: {}'.format(lr))
+      xm.master_print('old learning rate: {}'.format(lr))
       lr = trainer.lr_step(epoch_itr.epoch, vloss)
-      print('new learning rate: {}'.format(lr))
+      xm.master_print('new learning rate: {}'.format(lr))
 
       # save checkpoint
       # FIXME: only save from first device?
@@ -407,14 +403,14 @@ def main_tpu(args):
       print(torch_xla._XLAC._xla_metrics_report())
 
   train_meter.stop()
-  print('| done training in {:.1f} seconds'.format(train_meter.sum))
+  xm.master_print('| done training in {:.1f} seconds'.format(train_meter.sum))
 
 
 def _mp_fn(index, flags):
   global FLAGS
   FLAGS = flags
-  flags.distributed_rank = xm.get_ordinal()
-  flags.distributed_world_size = xm.xrt_world_size()
+  #flags.distributed_rank = xm.get_ordinal()
+  #flags.distributed_world_size = xm.xrt_world_size()
   torch.set_default_tensor_type('torch.FloatTensor')
   main_tpu(flags)
 
