@@ -317,6 +317,7 @@ def main_tpu(args):
 
   def validate_subset(args, device, trainer, task, epoch_itr, subset):
     # Initialize data iterator
+    # FIXME: we're not sharding the validation set
     itr = task.get_batch_iterator(
         dataset=task.dataset(subset),
         max_tokens=args.max_tokens,
@@ -404,9 +405,10 @@ def main_tpu(args):
     # save checkpoint
     if epoch_itr.epoch % args.save_interval == 0:
       checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, vloss, xm.is_master_ordinal())
+    xm.mark_step()
 
     if args.metrics_debug:
-      print(torch_xla._XLAC._xla_metrics_report())
+      xm._master_print(torch_xla._XLAC._xla_metrics_report())
 
   train_meter.stop()
   xm.master_print('| done training in {:.1f} seconds'.format(train_meter.sum))
