@@ -273,7 +273,7 @@ def main_tpu(args):
       rates = tracker.rate(), tracker.global_rate()
       msg += ', Rate={:.2f}, GlobalRate={:.2f}'.format(*rates)
     if log_output:
-      msg += ', loss={:.4f}, nll_loss={:.4f}'.format(
+      msg += ', Loss={:.4f}, Nll_Loss={:.4f}'.format(
           log_output['loss'].item(), log_output['nll_loss'].item())
     return msg
 
