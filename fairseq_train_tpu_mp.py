@@ -404,7 +404,7 @@ def main_tpu(args):
 
     # save checkpoint
     if epoch_itr.epoch % args.save_interval == 0:
-      checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, vloss, xm.is_master_ordinal())
+      checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, vloss)
     xm.mark_step()
 
     if args.metrics_debug:
