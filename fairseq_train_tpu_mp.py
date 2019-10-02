@@ -58,10 +58,12 @@ utils_tpu.initialize_path('fairseq')
 
 import torch
 import torch_xla
-import torch_xla_py.data_parallel as dp
-import torch_xla_py.utils as xu
-import torch_xla_py.xla_model as xm
-import torch_xla_py.xla_multiprocessing as xmp
+import torch_xla.debug.metrics as met
+import torch_xla.distributed.data_parallel as dp
+import torch_xla.distributed.parallel_loader as pl
+import torch_xla.utils.utils as xu
+import torch_xla.core.xla_model as xm
+import torch_xla.distributed.xla_multiprocessing as xmp
 
 from fairseq.data import data_utils
 # Overwriting collate_tokens to guarantee constant size input tensors
@@ -245,6 +247,7 @@ def main_tpu(args):
       task.load_dataset(valid_sub_split, combine=True, epoch=0)
 
     # Build models and criteria to print some metadata
+    torch.manual_seed(args.seed)
     model, criterion = task.build_model(args), task.build_criterion(args)
     xm.master_print(model)
     xm.master_print('| model {}, criterion {}'.format(
@@ -336,7 +339,7 @@ def main_tpu(args):
         epoch_itr.epoch,
         prefix='valid on {} \'{}\' subset'.format(device, subset),
         no_progress_bar='simple')
-    para_loader = dp.ParallelLoader(progress, [device])
+    para_loader = pl.ParallelLoader(progress, [device])
     stats = valid_loop_fn(device, trainer, para_loader.per_device_loader(device))
     progress.print(stats, tag=subset, step=trainer.get_num_updates())
     return stats['loss'].avg
@@ -360,7 +363,7 @@ def main_tpu(args):
     itr = iterators.GroupedIterator(itr, update_freq)
     progress = progress_bar.build_progress_bar(
         args, itr, epoch_itr.epoch, prefix='training on {}'.format(device), no_progress_bar='simple')
-    para_loader = dp.ParallelLoader(progress, [device])
+    para_loader = pl.ParallelLoader(progress, [device])
     return progress, para_loader
 
   def keep_training(lr, epoch_itr, trainer):
@@ -404,11 +407,13 @@ def main_tpu(args):
 
     # save checkpoint
     if epoch_itr.epoch % args.save_interval == 0:
-      checkpoint_utils.save_checkpoint(args, trainer, epoch_itr, vloss)
+      checkpoint_utils.save_checkpoint(
+          args, trainer, epoch_itr, vloss,
+          master_ordinal=xm.is_master_ordinal())
     xm.mark_step()
 
     if args.metrics_debug:
-      xm._master_print(torch_xla._XLAC._xla_metrics_report())
+      xm.master_print(torch_xla._XLAC._xla_metrics_report())
 
   train_meter.stop()
   xm.master_print('| done training in {:.1f} seconds'.format(train_meter.sum))
@@ -428,7 +433,6 @@ if __name__ == '__main__':
     data_utils.batch_by_size = batch_by_size_gpu
     fairseq_train.cli_main()
   else:
-    #main_tpu(FLAGS)
     xu.eprint('Args')
     for key, val in FLAGS.__dict__.items():
       xu.eprint('\t{} {}'.format(key, val))
